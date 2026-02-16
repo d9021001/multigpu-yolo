@@ -1,0 +1,1 @@
+"C:\Program Files\MATLAB\R2025a\bin\matlab.exe" -batch "cd('c:\Users\udoo_w2\Desktop\work_traffic\matlab_multigpus'); try, run('trainYolov2gpu3.m'); catch e, disp(getReport(e)); end; quit;" >> debug_gpu3_v9.log 2>&1

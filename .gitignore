@@ -1,0 +1,23 @@
+# MATLAB generated files
+*.asv
+*.autosave
+*.slxc
+*.mat
+!xsol_Xx_costHistory.mat
+
+# Temporary data exchange folders
+xFolder/*
+cFolder/*
+!xFolder/.gitkeep
+!cFolder/.gitkeep
+
+# Log files
+*.log
+debug_*.log
+
+# Checkpoints
+th1_th2_*.mat
+
+# System files
+Thumbs.db
+.DS_Store
