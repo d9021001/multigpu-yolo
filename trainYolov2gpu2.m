@@ -1,11 +1,18 @@
 clear all; clc; close all;warning off;
+disp('Step 1: Started script');
 % load trainingDataGpu2
+disp('Step 2: Reading CSV 2');
 trainingData = read_yolo_csv('tr2_fix.csv');
+disp('Step 3: Reading CSV valid');
 validData = read_yolo_csv('valid1_fix.csv');
+disp('Step 4: CSVs read');
 % trainingData1=trainingData;
 % trainingData = trainingData(1:10:10000,:); % speed up
 numClasses = width(trainingData)-1;
+%gpuD=gpuDevice(1); 
+disp('Step 5: Initializing GPU');
 gpuD=gpuDevice(3); % Use OS GPU 2 (1050 Ti)
+disp('Step 6: GPU Initialized');
 imageSize = [224 224 3];
 anchorBoxes=[24,29;
             16,18;
@@ -16,7 +23,7 @@ iterCnt=0;
 tic
 format long
 % folder='.\xFolder\';
-% while(1)        
+% while 1        
 %     flag=0;
 %     listing = dir(folder);
 %     L=length(listing);
@@ -37,7 +44,7 @@ format long
 %         end
 %     end
 %     pause(5);
-% end  
+% end
 % for gen=1:7:701 % mobilenetv2
 %for gen=2:7:702 % resnet18
 %for gen=3:7:703 % resnet50
@@ -45,7 +52,7 @@ format long
 %for gen=5:7:705 % vgg16
 %for gen=6:7:706 % vgg19
 for gen=7:7:707 % googlenet
-    clc    
+    clc
     iterCnt=iterCnt+1
     trainTime=toc/3600
     if iterCnt>=2
@@ -73,7 +80,7 @@ for gen=7:7:707 % googlenet
         disp(['[GPU2] Deleted ' targetFile]);
     catch e
         disp(['[GPU2] Error deleting x2.mat: ' e.message]);
-    end  
+    end
     if x2(1)<=1
         x2(1)=1;
     end
@@ -87,7 +94,7 @@ for gen=7:7:707 % googlenet
         x2(2)=1e-2;
     end    
     mBS=ceil(x2(1));
-    lr=x2(2); 
+    lr=x2(2);
 %     mBS=x2(iterCnt,1);
 %     lr=x2(iterCnt,2);
     options = trainingOptions('sgdm', ...
@@ -111,49 +118,63 @@ for gen=7:7:707 % googlenet
 
     [detector,info] = trainYOLOv2ObjectDetector(trainingData,lgraph,options);
     
-    % boxScore1
-    % 5-fold CV on valid1_fix.csv
-    % 5-fold CV on valid1_fix.csv (Manual Split to avoid Statistics Toolbox dependency)
-    numFolds = 5;
-    numRows = height(validData);
+    % --- Step 6: Competitive Random Model Exchange (User Requirement) ---
+    % 1. Evaluate LOCAL model first (5-Fold CV)
+    disp(['[GPU2] Evaluating LOCAL model with 5-Fold CV...']);
+    c2 = evaluate_model_cost(detector, validData);
     
-    % Generate balanced fold indices
-    foldIndices = repmat(1:numFolds, 1, ceil(numRows/numFolds));
-    foldIndices = foldIndices(1:numRows);
-    foldIndices = foldIndices(randperm(numRows)); % Shuffle to randomize
-    
-    p_folds = zeros(numFolds,1);
-    r_folds = zeros(numFolds,1);
-    
-    for k = 1:numFolds
-        testIdx = (foldIndices == k)';
-        testTbl = validData(testIdx, :);
-        [p, r] = evaluate_fold(detector, testTbl);
-        p_folds(k) = p;
-        r_folds(k) = r;
-    end
-    precision = mean(p_folds);
-    recall = mean(r_folds);
-
-    % Calculate Cost
-    precision = mean(p_folds);
-    recall = mean(r_folds);
-    c2 = (1/precision + 1/recall)/2;
-    
-    % --- NaN/Inf Handling (User Request) ---
+    % --- NaN/Inf Handling for Local ---
     if isnan(c2) || isinf(c2)
-        disp('[WARN] Cost is NaN/Inf. Applying fallback logic...');
+        disp('[WARN] Local Cost is NaN/Inf.');
         if iterCnt > 1
-             % Use the last valid cost
-             c2 = cost(iterCnt-1);
-             disp(['[WARN] Replaced NaN with previous cost: ' num2str(c2)]);
+             c2 = cost(iterCnt-1); % Use history
         else
-             % First iteration is NaN. Use a "Max Loss" fallback.
-             c2 = 1000; 
-             disp(['[WARN] First iteration NaN. Replaced with default max penalty: ' num2str(c2)]);
+             c2 = 1000; % Max penalty
         end
+        disp(['[WARN] Fallback Local Cost: ' num2str(c2)]);
     end
-    % --------------------------------------- 
+    
+    % 2. Save local model for exchange
+    exchangeFile = sprintf('.\\exchange\\model_gpu2_iter%d.mat', iterCnt);
+    save(exchangeFile, 'detector');
+    disp(['[GPU2] Saved model for exchange: ' exchangeFile]);
+    
+    % 3. Wait for other GPUs (Synchronization Barrier)
+    otherFile1 = sprintf('.\\exchange\\model_gpu1_iter%d.mat', iterCnt);
+    otherFile3 = sprintf('.\\exchange\\model_gpu3_iter%d.mat', iterCnt);
+    
+    disp('[GPU2] Waiting for model exchange...');
+    while (~exist(otherFile1, 'file') || ~exist(otherFile3, 'file'))
+        pause(1);
+    end
+    
+    % 4. Select Peer to Compare
+    exchangeCandidates = {otherFile1, otherFile3};
+    chosenIdx = randi(2);
+    peerFile = exchangeCandidates{chosenIdx};
+    
+    disp(['[GPU2] Comparing with Peer: ' peerFile]);
+    loaded = load(peerFile, 'detector');
+    peer_detector = loaded.detector;
+    
+    % 5. Evaluate PEER (5-Fold CV)
+    c2_peer = evaluate_model_cost(peer_detector, validData);
+    
+    % --- NaN/Inf Handling for Peer ---
+    if isnan(c2_peer) || isinf(c2_peer)
+        c2_peer = 1000; % Peer is broken
+    end
+    
+    % 6. Competitive Swap
+    if c2_peer < c2
+        disp(['[GPU2] Peer is BETTER (' num2str(c2_peer) ' < ' num2str(c2) '). SWAPPING.']);
+        detector = peer_detector;
+        c2 = c2_peer;
+    else
+        disp(['[GPU2] Peer is WORSE or EQUAL (' num2str(c2_peer) ' >= ' num2str(c2) '). KEEPING LOCAL.']);
+    end
+    % ---------------------------------------------------------
+
     save('.\cFolder\c2.mat','c2');
     th1(iterCnt)=mBS;
     th2(iterCnt)=lr; 
@@ -185,10 +206,8 @@ for gen=7:7:707 % googlenet
     
     if mod(gen,7)==0
         save(strcat('.\th1_th2_cost_yolov2googlenetGpu2_',num2str(iterCnt),'.mat'),'th1','th2','cost');
-    end   
-    %     if iterCnt>=3
-    %         break
-    %     end
+    end    
+    
     if c2<=1.2
         break
     end
@@ -196,3 +215,27 @@ end
 disp('Done');
 reset(gpuD);
 
+% --- Helper Function for 5-Fold CV ---
+function cost = evaluate_model_cost(detector, validData)
+    numFolds = 5;
+    numRows = height(validData);
+    
+    foldIndices = repmat(1:numFolds, 1, ceil(numRows/numFolds));
+    foldIndices = foldIndices(1:numRows);
+    foldIndices = foldIndices(randperm(numRows)); % Shuffle
+    
+    p_folds = zeros(numFolds,1);
+    r_folds = zeros(numFolds,1);
+    
+    for k = 1:numFolds
+        testIdx = (foldIndices == k)';
+        testTbl = validData(testIdx, :);
+        [p, r] = evaluate_fold(detector, testTbl);
+        p_folds(k) = p;
+        r_folds(k) = r;
+    end
+    precision = mean(p_folds);
+    recall = mean(r_folds);
+    
+    cost = (1/precision + 1/recall)/2;
+end

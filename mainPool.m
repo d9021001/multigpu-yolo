@@ -19,12 +19,13 @@ delete('.\cFolder\c2.mat');
 delete('.\cFolder\c3.mat');
 costHistory=[]; k=0; minCost=inf;
 
-x(:,1)=[32;
-        1e-3];
-x(:,2)=[16;
-        1e-4];
-x(:,3)=[1;
-        1e-6];
+% 3) Random Initialization
+% Randomly initialize three learning rates (mu1, mu2, mu3) from range (0, 0.01)
+% Randomly initialize three batch sizes (sigma1, sigma2, sigma3) as integers [1, 32]
+
+x = zeros(2,3);
+x(1,:) = randi([1, 32], 1, 3); % Batch Size (sigma)
+x(2,:) = rand(1, 3) * 0.01;    % Learning Rate (mu)
 
 x23=x;
 save_x1_x2_x3
@@ -43,6 +44,13 @@ for iter=1:10
         k=k+1;
         costHistory(k)=cost_min;
         minCost=cost_min;
+    end
+    
+    % Step 5.3: Check Convergence (User Requirement)
+    % If current best cost meets goal, terminate.
+    if minCost <= 1.0 
+        disp(['[MainPool] Convergence Reached! minCost: ' num2str(minCost)]);
+        break;
     end
     x_high = x(:,Index_high);
     x_low  = x(:,Index_low) ;   

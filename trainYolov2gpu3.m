@@ -1,11 +1,18 @@
 clear all; clc; close all;warning off;
+disp('Step 1: Started script');
 % load trainingDataGpu3
+disp('Step 2: Reading CSV 3');
 trainingData = read_yolo_csv('tr3_fix.csv');
+disp('Step 3: Reading CSV valid');
 validData = read_yolo_csv('valid1_fix.csv');
+disp('Step 4: CSVs read');
 % trainingData1=trainingData;
 % trainingData = trainingData(1:10:10000,:); % speed up
 numClasses = width(trainingData)-1;
+%gpuD=gpuDevice(1); 
+disp('Step 5: Initializing GPU');
 gpuD=gpuDevice(4); % Use OS GPU 3 (1050 Ti)
+disp('Step 6: GPU Initialized');
 imageSize = [224 224 3];
 anchorBoxes=[24,29;
             16,18;
@@ -37,7 +44,7 @@ format long
 %         end
 %     end
 %     pause(5);
-% end   
+% end
 % for gen=1:7:701 % mobilenetv2
 %for gen=2:7:702 % resnet18
 %for gen=3:7:703 % resnet50
@@ -47,7 +54,7 @@ format long
 for gen=7:7:707 % googlenet
     clc
     iterCnt=iterCnt+1
-    trainTime=toc/3600  
+    trainTime=toc/3600
     if iterCnt>=2
         minCost=min(cost)
     end
@@ -73,7 +80,7 @@ for gen=7:7:707 % googlenet
         disp(['[GPU3] Deleted ' targetFile]);
     catch e
         disp(['[GPU3] Error deleting x3.mat: ' e.message]);
-    end   
+    end
     if x3(1)<=1
         x3(1)=1;
     end
@@ -85,7 +92,7 @@ for gen=7:7:707 % googlenet
     end
     if x3(2)>=1e-2
         x3(2)=1e-2;
-    end
+    end    
     mBS=ceil(x3(1));
     lr=x3(2);
 %     mBS=x3(iterCnt,1);
@@ -111,49 +118,63 @@ for gen=7:7:707 % googlenet
 
     [detector,info] = trainYOLOv2ObjectDetector(trainingData,lgraph,options);
     
-    % boxScore1
-    % 5-fold CV on valid1_fix.csv
-    % 5-fold CV on valid1_fix.csv (Manual Split to avoid Statistics Toolbox dependency)
-    numFolds = 5;
-    numRows = height(validData);
+    % --- Step 6: Competitive Random Model Exchange (User Requirement) ---
+    % 1. Evaluate LOCAL model first (5-Fold CV)
+    disp(['[GPU3] Evaluating LOCAL model with 5-Fold CV...']);
+    c3 = evaluate_model_cost(detector, validData);
     
-    % Generate balanced fold indices
-    foldIndices = repmat(1:numFolds, 1, ceil(numRows/numFolds));
-    foldIndices = foldIndices(1:numRows);
-    foldIndices = foldIndices(randperm(numRows)); % Shuffle to randomize
-    
-    p_folds = zeros(numFolds,1);
-    r_folds = zeros(numFolds,1);
-    
-    for k = 1:numFolds
-        testIdx = (foldIndices == k)';
-        testTbl = validData(testIdx, :);
-        [p, r] = evaluate_fold(detector, testTbl);
-        p_folds(k) = p;
-        r_folds(k) = r;
-    end
-    precision = mean(p_folds);
-    recall = mean(r_folds);
-
-    % Calculate Cost
-    precision = mean(p_folds);
-    recall = mean(r_folds);
-    c3 = (1/precision + 1/recall)/2;
-    
-    % --- NaN/Inf Handling (User Request) ---
+    % --- NaN/Inf Handling for Local ---
     if isnan(c3) || isinf(c3)
-        disp('[WARN] Cost is NaN/Inf. Applying fallback logic...');
+        disp('[WARN] Local Cost is NaN/Inf.');
         if iterCnt > 1
-             % Use the last valid cost
-             c3 = cost(iterCnt-1);
-             disp(['[WARN] Replaced NaN with previous cost: ' num2str(c3)]);
+             c3 = cost(iterCnt-1); % Use history
         else
-             % First iteration is NaN. Use a "Max Loss" fallback.
-             c3 = 1000; 
-             disp(['[WARN] First iteration NaN. Replaced with default max penalty: ' num2str(c3)]);
+             c3 = 1000; % Max penalty
         end
+        disp(['[WARN] Fallback Local Cost: ' num2str(c3)]);
     end
-    % --------------------------------------- 
+    
+    % 2. Save local model for exchange
+    exchangeFile = sprintf('.\\exchange\\model_gpu3_iter%d.mat', iterCnt);
+    save(exchangeFile, 'detector');
+    disp(['[GPU3] Saved model for exchange: ' exchangeFile]);
+    
+    % 3. Wait for other GPUs (Synchronization Barrier)
+    otherFile1 = sprintf('.\\exchange\\model_gpu1_iter%d.mat', iterCnt);
+    otherFile2 = sprintf('.\\exchange\\model_gpu2_iter%d.mat', iterCnt);
+    
+    disp('[GPU3] Waiting for model exchange...');
+    while (~exist(otherFile1, 'file') || ~exist(otherFile2, 'file'))
+        pause(1);
+    end
+    
+    % 4. Select Peer to Compare
+    exchangeCandidates = {otherFile1, otherFile2};
+    chosenIdx = randi(2);
+    peerFile = exchangeCandidates{chosenIdx};
+    
+    disp(['[GPU3] Comparing with Peer: ' peerFile]);
+    loaded = load(peerFile, 'detector');
+    peer_detector = loaded.detector;
+    
+    % 5. Evaluate PEER (5-Fold CV)
+    c3_peer = evaluate_model_cost(peer_detector, validData);
+    
+    % --- NaN/Inf Handling for Peer ---
+    if isnan(c3_peer) || isinf(c3_peer)
+        c3_peer = 1000; % Peer is broken
+    end
+    
+    % 6. Competitive Swap
+    if c3_peer < c3
+        disp(['[GPU3] Peer is BETTER (' num2str(c3_peer) ' < ' num2str(c3) '). SWAPPING.']);
+        detector = peer_detector;
+        c3 = c3_peer;
+    else
+        disp(['[GPU3] Peer is WORSE or EQUAL (' num2str(c3_peer) ' >= ' num2str(c3) '). KEEPING LOCAL.']);
+    end
+    % ---------------------------------------------------------
+
     save('.\cFolder\c3.mat','c3');
     th1(iterCnt)=mBS;
     th2(iterCnt)=lr; 
@@ -186,9 +207,7 @@ for gen=7:7:707 % googlenet
     if mod(gen,7)==0
         save(strcat('.\th1_th2_cost_yolov2googlenetGpu3_',num2str(iterCnt),'.mat'),'th1','th2','cost');
     end    
-    %     if iterCnt>=3
-    %         break
-    %     end
+    
     if c3<=1.2
         break
     end
@@ -196,3 +215,27 @@ end
 disp('Done');
 reset(gpuD);
 
+% --- Helper Function for 5-Fold CV ---
+function cost = evaluate_model_cost(detector, validData)
+    numFolds = 5;
+    numRows = height(validData);
+    
+    foldIndices = repmat(1:numFolds, 1, ceil(numRows/numFolds));
+    foldIndices = foldIndices(1:numRows);
+    foldIndices = foldIndices(randperm(numRows)); % Shuffle
+    
+    p_folds = zeros(numFolds,1);
+    r_folds = zeros(numFolds,1);
+    
+    for k = 1:numFolds
+        testIdx = (foldIndices == k)';
+        testTbl = validData(testIdx, :);
+        [p, r] = evaluate_fold(detector, testTbl);
+        p_folds(k) = p;
+        r_folds(k) = r;
+    end
+    precision = mean(p_folds);
+    recall = mean(r_folds);
+    
+    cost = (1/precision + 1/recall)/2;
+end
