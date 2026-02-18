@@ -176,6 +176,16 @@ for gen=7:7:707 % googlenet
     % ---------------------------------------------------------
 
     save('.\cFolder\c2.mat','c2');
+    
+    % --- Save Best Model for this Iteration (User Request) ---
+    if ~exist('.\best_models','dir')
+        mkdir('.\best_models');
+    end
+    bestModelFile = sprintf('.\\best_models\\best_model_gpu2_iter%d.mat', iterCnt);
+    save(bestModelFile, 'detector');
+    disp(['[GPU2] Saved BEST model (Post-Exchange) to: ' bestModelFile]);
+    % ---------------------------------------------------------
+
     th1(iterCnt)=mBS;
     th2(iterCnt)=lr; 
     cost(iterCnt)=c2;
