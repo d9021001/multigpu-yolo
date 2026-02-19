@@ -135,6 +135,9 @@ for gen=7:7:707 % googlenet
     end
     
     % 2. Save local model for exchange
+    if ~exist('.\exchange','dir')
+        mkdir('.\exchange');
+    end
     exchangeFile = sprintf('.\\exchange\\model_gpu3_iter%d.mat', iterCnt);
     save(exchangeFile, 'detector');
     disp(['[GPU3] Saved model for exchange: ' exchangeFile]);
