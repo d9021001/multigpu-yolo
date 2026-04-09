@@ -1,23 +1,33 @@
-# MATLAB generated files
-*.asv
-*.autosave
-*.slxc
-*.mat
-!xsol_Xx_costHistory.mat
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
 
-# Temporary data exchange folders
-xFolder/*
-cFolder/*
-!xFolder/.gitkeep
-!cFolder/.gitkeep
+# Model weights (too large for git)
+models/
+*.pt
+*.pth
+
+# Image data (store separately)
+rgb_/
+
+# Training outputs
+simplex_work/
+yolo_pred_out/
+runs/
+iter_*/
 
 # Log files
 *.log
-debug_*.log
-
-# Checkpoints
-th1_th2_*.mat
 
 # System files
 Thumbs.db
 .DS_Store
+
+# IDE
+.vscode/
+.idea/

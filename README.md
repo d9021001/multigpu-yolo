@@ -1,55 +1,104 @@
-# Multi-GPU YOLOv2 Hyperparameter Optimization in MATLAB
+# Multi-GPU YOLOv2 Hyperparameter Optimization
 
-This project implements a **parallel hyperparameter optimization framework** for training YOLOv2 object detectors using multiple GPUs simultaneously. It utilizes a **Master-Worker architecture** with robust file-based synchronization to distribute training tasks across available hardware resources.
+Distributed stochastic multi-GPU hyperparameter optimization for YOLOv2 object detection in traffic surveillance. Implements Algorithm 1 from the paper using a **Nelder-Mead simplex search** with randomized coefficients across 3 GPUs.
 
-## 🚀 Key Features
+## Architecture
 
-*   **Multi-GPU Parallelism**: concurrently trains multiple YOLOv2 models on separate GPUs (specifically targeted for GTX 1050 Ti 4GB cards).
-*   **Robust Synchronization**: Uses a low-overhead file polling mechanism (`exist` + `pause`) to coordinate between the Main (Optimizer) and Worker (Trainer) processes. This ensures negligible impact on training performance (<0.01% overhead).
-*   **Fault Tolerance**:
-    *   **Automatic Fallback**: Switches to simpler network architectures if pretrained models (GoogLeNet/ResNet) are unavailable.
-    *   **NaN Recovery**: Automatically detects numerical explosions (`NaN`/`Inf` loss) and recovers by reverting to previous valid states or applying penalties, ensuring the optimization loop never crashes.
-    *   **License/Resource Handling**: Designed to be resilient against temporary MATLAB license checkouts.
-*   **Manual Cross-Validation**: Implements 5-fold cross-validation manually to remove dependencies on the Statistics and Machine Learning Toolbox.
+- **CPU**: Central Coordinator — aggregates costs, computes simplex operations (Reflection, Expansion, Contraction, Shrink)
+- **3 GPUs**: Distributed Workers — each trains YOLOv2-VGG19 on a separate data partition
+- **P = 2** hyperparameters: learning rate (mu) and batch size (sigma)
+- **K = P + 1 = 3** simplex vertices, one per GPU
 
-## 📂 Project Structure
+## Algorithm Overview
 
-*   **`mainPool.m`**: The **Master** script. It runs the optimization algorithm (Evolutionary/Genetic-style search), generates hyperparameter sets (`x1`, `x2`, `x3`), and aggregates costs.
-*   **`trainYolov2gpu1.m`, `gpu2.m`, `gpu3.m`**: The **Worker** scripts. Each is pinned to a specific GPU. They:
-    1.  Wait for parameters (`xFolder/xN.mat`).
-    2.  Train a YOLOv2 model using those parameters.
-    3.  Perform 5-fold cross-validation.
-    4.  Return the cost (1/Precision + 1/Recall) to `cFolder/cN.mat`.
-*   **`run_*.bat`**: Batch scripts to launch instances in separate processes, ensuring true parallelism (bypassing MATLAB's single-threaded nature).
+1. Initialize K = 3 random hyperparameter candidates
+2. Sample stochastic coefficients: alpha ~ U[0.9, 1.1], gamma ~ U[1.7, 2.3], beta ~ U[0.3, 0.7]
+3. Train all 3 GPUs **in parallel** with their assigned candidates and data partitions
+4. Random model exchange among GPUs (mitigates overfitting)
+5. Evaluate Cost(theta) = 0.5 * (1/Precision + 1/Recall)
+6. Perform Nelder-Mead simplex step (Reflection / Expansion / Contraction / Shrink)
+7. Repeat until convergence or n_max iterations
 
-## 🛠️ Prerequisites
+## Project Structure
 
-*   **MATLAB R2025a** (or compatible)
-*   **Deep Learning Toolbox**
-*   **Computer Vision Toolbox**
-*   **Parallel Computing Toolbox**
-*   **CUDA-enabled GPU(s)** (Tested with NVIDIA GTX 1050 Ti)
+```
+distributed_simplex_3gpu.py   # Main optimizer (Algorithm 1)
+sanity_yolov2_googlenet.py    # Worker training script (YOLOv2 + VGG19)
+run_simplex_3gpu.bat           # Windows batch launcher
+utils/
+    yolo_model.py              # YOLOv2 architecture
+    yolo_loss.py               # YOLO loss function
+    yolov2_decode.py           # Bounding box decoding
+    yolo_eval_inference.py     # Evaluation & inference
+    csv_dataset.py             # CSV-based dataset loader
+    dataset.py                 # Dataset utilities
+    box_score.py               # Box scoring metrics
+    cross_validation.py        # K-fold cross validation
+    train_utils.py             # Training utilities
+    training_manager.py        # Training loop manager
+    model_manager.py           # Model save/load
+    param_manager.py           # Hyperparameter management
+    federated_utils.py         # Distributed training helpers
+tr1_fix.csv                    # GPU 0 training data
+tr2_fix.csv                    # GPU 1 training data
+tr3_fix.csv                    # GPU 2 training data
+valid1_fix.csv                 # Validation data
+test1.csv                      # Test data
+```
 
-## 🚦 How to Run
+## Prerequisites
 
-1.  **Start the Master**:
-    Double-click `run_main.bat`. This initializes the optimization loop and waits for workers.
+- Python 3.8+
+- PyTorch (with CUDA support)
+- 3 CUDA-enabled GPUs
+- Pre-trained VGG19 model weights (`best_vgg19.pt`)
 
-2.  **Start the Workers**:
-    Double-click `run_gpu1.bat`, `run_gpu2.bat`, and `run_gpu3.bat`.
-    *   Each script will launch a separate MATLAB command window.
-    *   They will automatically detect their assigned GPU and begin processing tasks from the Main script.
+## Setup
 
-3.  **Monitor Progress**:
-    *   Real-time training progress (Loss/RMSE) is displayed in each Worker's command window.
-    *   Logs are saved to `debug_main.log` and `debug_gpuN.log`.
+1. Clone the repository
+2. Create a `models/` directory and place `best_vgg19.pt` inside
+3. Create an `rgb_/` directory with the training images (referenced by CSV files)
 
-## ⚙️ Configuration
+## How to Run
 
-*   **Optimization Settings**: Modified in `mainPool.m`.
-*   **Training Options**: Modified in `trainYolov2gpu*.m` (Learning Rate, Batch Size, Epochs, etc.).
-*   **Dataset**: The scripts expect `tr1_fix.csv` (Training) and `valid1_fix.csv` (Validation) in the root directory.
+**Windows:**
+```bat
+run_simplex_3gpu.bat
+```
 
-## 📊 Performance Note
+**Linux / Manual:**
+```bash
+python distributed_simplex_3gpu.py \
+    --model models/best_vgg19.pt \
+    --training-data tr1_fix.csv tr2_fix.csv tr3_fix.csv \
+    --validation-data valid1_fix.csv \
+    --gpu-ids 0,1,2 \
+    --max-iters 30 \
+    --epochs-per-iter 3
+```
 
-The file-based synchronization introduces a latency of ~1 second per iteration. Given that a single training run takes ~3.5 hours, the communication overhead is **negligible (<0.01%)** and does not impact optimization efficiency.
+**Resume from checkpoint:**
+```bash
+python distributed_simplex_3gpu.py \
+    --model models/best_vgg19.pt \
+    --training-data tr1_fix.csv tr2_fix.csv tr3_fix.csv \
+    --resume-state simplex_work/simplex_state.json
+```
+
+## Configuration
+
+Key parameters in `distributed_simplex_3gpu.py`:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `lr_range` | [1e-4, 5e-3] | Learning rate search space |
+| `bs_range` | [4, 16] | Batch size search space |
+| `max_iters` | 30 | Maximum simplex iterations |
+| `epochs_per_iter` | 3 | Training epochs per worker per iteration |
+| `cost_goal` | 1.05 | Early stopping threshold |
+
+## Output
+
+- `simplex_work/simplex_state.json` — checkpoint for resuming
+- `simplex_work/global_best.pt` — best model weights found
+- `simplex_work/simplex_log_*.json` — full optimization history
